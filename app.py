@@ -3,9 +3,9 @@ from google.cloud import vision_v1p3beta1 as vision
 import os
 import io
 import spacy
+import fitz  # PyMuPDF for PDF extraction
 from openai import OpenAI
 import en_core_sci_sm
-#import en_core_sci_lg
 
 # Load SciSpaCy model
 nlp = en_core_sci_sm.load()
@@ -15,14 +15,26 @@ os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_key.json"
 client = vision.ImageAnnotatorClient()
 
 
+
+
 # Function to verify prescription using LLM (GPT-4)
-def verify_prescription_with_llm(extracted_text):
-    prompt = f"Verify the following prescription for accuracy: {extracted_text}"
+def verify_prescription_with_llm(extracted_text, patient_history):
+    prompt = f"""
+    Verify the following prescription for accuracy based on the patient's medical history:
+    
+    Patient History:
+    {patient_history}
+    
+    Prescription:
+    {extracted_text}
+    
+    Analyze for potential issues like incorrect dosages, drug interactions, and missing instructions, and provide recommendations accordingly.
+    """
 
     response = client_openai.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are an advanced assistant specializing in prescription validation. Your task is to analyze the following prescription for potential issues, including incorrect dosages, drug interactions, missing instructions, and adherence to medical guidelines. Based on this analysis, generate a structured report that includes: 1. Prescription Overview. 2. Identified Errors or Inconsistencies. 3. Risk Analysis (e.g., potential drug interactions). 4. Recommendations (e.g., dosage adjustments, clarifications). Ensure that the report is clear, concise, and focused on ensuring patient safety and proper medication administration."},
+            {"role": "system", "content": "You are an advanced assistant specializing in prescription validation. Use the patient's medical history to analyze the prescription for potential issues like incorrect dosages, drug interactions, and missing instructions. Provide a structured report that includes risk analysis and recommendations."},
             {"role": "user", "content": prompt}
         ]
     )
@@ -47,8 +59,20 @@ def detect_handwritten_ocr_image(image_path):
     return response.full_text_annotation.text
 
 
+# Function to extract text from PDF (patient history)
+def extract_text_from_pdf(pdf_path):
+    """Extracts text from a PDF file."""
+    text = ""
+    with fitz.open(pdf_path) as pdf:
+        for page_num in range(pdf.page_count):
+            page = pdf.load_page(page_num)
+            text += page.get_text()
+
+    return text
+
+
 # Streamlit app logic
-st.title("Handwritten Prescription OCR and Verification")
+st.title("Handwritten Prescription OCR and Verification with Patient History")
 
 option = st.selectbox("Choose Input Source:", ["Upload Local File", "Google Cloud Storage URI"])
 
@@ -66,10 +90,25 @@ if option == "Upload Local File":
         
         # Display extracted text in a larger box
         st.text_area("Extracted Text", extracted_text, height=300)
-        
+
+        # Upload patient history (PDF)
+        uploaded_pdf = st.file_uploader("Upload Patient History (PDF)", type=["pdf"])
+
+        patient_history = ""
+        if uploaded_pdf is not None:
+            # Save the uploaded PDF
+            with open(f"data/{uploaded_pdf.name}", "wb") as f:
+                f.write(uploaded_pdf.getbuffer())
+            st.success(f"Patient history file {uploaded_pdf.name} uploaded successfully!")
+
+            # Extract text from the PDF file
+            patient_history = extract_text_from_pdf(f"data/{uploaded_pdf.name}")
+            st.text_area("Extracted Patient History", patient_history, height=300)
+
         # Verify prescription using LLM
-        verification_result = verify_prescription_with_llm(extracted_text)
-        st.write("LLM Verification Result:", verification_result)
+        if st.button("Verify Prescription with Patient History"):
+            verification_result = verify_prescription_with_llm(extracted_text, patient_history)
+            st.write("LLM Verification Result:", verification_result)
 
 elif option == "Google Cloud Storage URI":
     uri = st.text_input("Enter Google Cloud Storage URI (gs://...):")
@@ -79,7 +118,22 @@ elif option == "Google Cloud Storage URI":
         
         # Display extracted text in a larger box
         st.text_area("Extracted Text", extracted_text, height=300)
-        
+
+        # Upload patient history (PDF)
+        uploaded_pdf = st.file_uploader("Upload Patient History (PDF)", type=["pdf"])
+
+        patient_history = ""
+        if uploaded_pdf is not None:
+            # Save the uploaded PDF
+            with open(f"data/{uploaded_pdf.name}", "wb") as f:
+                f.write(uploaded_pdf.getbuffer())
+            st.success(f"Patient history file {uploaded_pdf.name} uploaded successfully!")
+
+            # Extract text from the PDF file
+            patient_history = extract_text_from_pdf(f"data/{uploaded_pdf.name}")
+            st.text_area("Extracted Patient History", patient_history, height=300)
+
         # Verify prescription using LLM
-        verification_result = verify_prescription_with_llm(extracted_text)
-        st.write("LLM Verification Result:", verification_result)
+        if st.button("Verify Prescription with Patient History"):
+            verification_result = verify_prescription_with_llm(extracted_text, patient_history)
+            st.write("LLM Verification Result:", verification_result)
