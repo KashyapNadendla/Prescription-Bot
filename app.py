@@ -3,19 +3,44 @@ from google.cloud import vision_v1p3beta1 as vision
 import os
 import io
 import spacy
-import fitz  # PyMuPDF for PDF extraction
+import fitz 
 from openai import OpenAI
 import en_core_sci_sm
+import google.generativeai as genai
+from dotenv import load_dotenv
+import json
+from google.oauth2 import service_account
+
+load_dotenv()
+
+# genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+
+# GEMINI_API_KEY = "AIzaSyAdG2ZFnLDq-KxUbJFlut5502rn759UPMM"
+
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+genai.configure(api_key=GEMINI_API_KEY)
 
 # Load SciSpaCy model
 nlp = en_core_sci_sm.load()
 
 # Set up Google Cloud Vision API Client
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_key.json"
-client = vision.ImageAnnotatorClient()
+# os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_key.json"
+# client = vision.ImageAnnotatorClient()
+
+google_credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+
+if google_credentials_json:
+    credentials_info = json.loads(google_credentials_json)
+    credentials = service_account.Credentials.from_service_account_info(credentials_info)
+
+    # Initialize the Vision API client with these credentials
+    client = vision.ImageAnnotatorClient(credentials=credentials)
+else:
+    raise ValueError("Google credentials JSON not found in environment variables.")
 
 
-
+# Open AI initialization
+client_openai = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 # Function to verify prescription using LLM (GPT-4)
 def verify_prescription_with_llm(extracted_text, patient_history):
@@ -40,6 +65,26 @@ def verify_prescription_with_llm(extracted_text, patient_history):
     )
 
     return response.choices[0].message.content
+
+
+
+## Gemini
+def gemini_prescription_respoonse(extracted_text,patient_history):
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    prompt = f"""
+    Verify the following prescription for accuracy based on the patient's medical history:
+    
+    Patient History:
+    {patient_history}
+    
+    Prescription:
+    {extracted_text}
+    
+    Analyze for potential issues like incorrect dosages, drug interactions, and missing instructions, and provide recommendations accordingly.
+    """
+    
+    response = model.generate_content(prompt)
+    print(response.text)
 
 
 # Function to detect handwritten text using Google Vision API
@@ -108,6 +153,7 @@ if option == "Upload Local File":
         # Verify prescription using LLM
         if st.button("Verify Prescription with Patient History"):
             verification_result = verify_prescription_with_llm(extracted_text, patient_history)
+            # verification_result = gemini_prescription_respoonse(extracted_text, patient_history)
             st.write("LLM Verification Result:", verification_result)
 
 elif option == "Google Cloud Storage URI":
@@ -136,4 +182,5 @@ elif option == "Google Cloud Storage URI":
         # Verify prescription using LLM
         if st.button("Verify Prescription with Patient History"):
             verification_result = verify_prescription_with_llm(extracted_text, patient_history)
+            # verification_result = gemini_prescription_respoonse(extracted_text, patient_history)
             st.write("LLM Verification Result:", verification_result)
