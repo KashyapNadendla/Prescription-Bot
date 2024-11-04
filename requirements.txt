@@ -1,5 +1,5 @@
 streamlit
-google-cloud
+google-cloud-vision
 google-auth
 spacy
 pymupdf
