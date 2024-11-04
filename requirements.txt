@@ -1,5 +1,5 @@
 streamlit
-google-cloud-vision
+google-cloud-vision==3.7.4
 google-auth
 spacy
 pymupdf
