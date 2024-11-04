@@ -1,0 +1,9 @@
+streamlit
+google-cloud-vision
+google-auth
+spacy
+pymupdf 
+openai
+en-core-sci-sm @ https://github.com/allenai/scispacy/releases/download/v0.4.0/en_core_sci_sm-0.4.0.tar.gz  # SciSpacy model
+google-generativeai
+python-dotenv
