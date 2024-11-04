@@ -5,7 +5,7 @@ import io
 import spacy
 import fitz 
 from openai import OpenAI
-import en_core_sci_sm
+# import en_core_sci_sm
 import google.generativeai as genai
 from dotenv import load_dotenv
 import json
