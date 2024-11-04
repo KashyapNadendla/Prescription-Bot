@@ -5,7 +5,7 @@ import io
 import spacy
 import fitz 
 from openai import OpenAI
-# import en_core_sci_sm
+import en_core_sci_sm
 import google.generativeai as genai
 from dotenv import load_dotenv
 import json
@@ -14,15 +14,6 @@ import subprocess
 import sys
 
 load_dotenv()
-
-
-# Install en_core_sci_sm if not already installed
-try:
-    nlp = spacy.load("en_core_sci_sm")
-except OSError:
-    # If the model is not installed, download it
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "https://github.com/allenai/scispacy/releases/download/v0.5.1/en_core_sci_sm-0.5.1.tar.gz"])
-    nlp = spacy.load("en_core_sci_sm")
 
 # genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
