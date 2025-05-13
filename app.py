@@ -1,188 +1,208 @@
-import streamlit as st
-from google.cloud import vision_v1p3beta1 as vision
 import os
-import io
-import spacy
-import fitz 
-from openai import OpenAI
-import en_core_sci_sm
-import google.generativeai as genai
-from dotenv import load_dotenv
 import json
+import base64
+import tempfile
+
+import streamlit as st
+import fitz  # PyMuPDF
+import en_core_sci_sm
+from openai import OpenAI
 from google.oauth2 import service_account
-import subprocess
-import sys
+from google.cloud import vision_v1p3beta1 as vision
+from dotenv import load_dotenv
+
+# ─── 1. Configuration & Clients ─────────────────────────────────────────────────
 
 load_dotenv()
 
-# genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+REQUIRED_ENVS = ["OPENAI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS_JSON"]
+for var in REQUIRED_ENVS:
+    if not os.getenv(var):
+        st.error(f"Missing env var: {var}")
+        st.stop()
 
-# GEMINI_API_KEY = "AIzaSyAdG2ZFnLDq-KxUbJFlut5502rn759UPMM"
-
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-genai.configure(api_key=GEMINI_API_KEY)
-
-# Load SciSpaCy model
+openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 nlp = en_core_sci_sm.load()
 
-# Set up Google Cloud Vision API Client
-# os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_key.json"
-# client = vision.ImageAnnotatorClient()
+gcp_json = json.loads(os.environ["GOOGLE_APPLICATION_CREDENTIALS_JSON"])
+credentials = service_account.Credentials.from_service_account_info(gcp_json)
+vision_client = vision.ImageAnnotatorClient(credentials=credentials)
 
-google_credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+# ─── 2. Utility Functions ─────────────────────────────────────────────────────────
 
-if google_credentials_json:
-    credentials_info = json.loads(google_credentials_json)
-    credentials = service_account.Credentials.from_service_account_info(credentials_info)
-
-    # Initialize the Vision API client with these credentials
-    client = vision.ImageAnnotatorClient(credentials=credentials)
-else:
-    raise ValueError("Google credentials JSON not found in environment variables.")
-
-
-# Open AI initialization
-client_openai = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-
-# Function to verify prescription using LLM (GPT-4)
-def verify_prescription_with_llm(extracted_text, patient_history):
-    prompt = f"""
-    Verify the following prescription for accuracy based on the patient's medical history:
-    
-    Patient History:
-    {patient_history}
-    
-    Prescription:
-    {extracted_text}
-    
-    Analyze for potential issues like incorrect dosages, drug interactions, and missing instructions, and provide recommendations accordingly.
-    """
-
-    response = client_openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are an advanced assistant specializing in prescription validation. Use the patient's medical history to analyze the prescription for potential issues like incorrect dosages, drug interactions, and missing instructions. Provide a structured report that includes risk analysis and recommendations."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
-    return response.choices[0].message.content
-
-
-
-## Gemini
-def gemini_prescription_respoonse(extracted_text,patient_history):
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    prompt = f"""
-    Verify the following prescription for accuracy based on the patient's medical history:
-    
-    Patient History:
-    {patient_history}
-    
-    Prescription:
-    {extracted_text}
-    
-    Analyze for potential issues like incorrect dosages, drug interactions, and missing instructions, and provide recommendations accordingly.
-    """
-    
-    response = model.generate_content(prompt)
-    print(response.text)
-
-
-# Function to detect handwritten text using Google Vision API
-def detect_handwritten_ocr_image(image_path):
-    """Detects handwritten text in a locally uploaded image file."""
-    with io.open(image_path, 'rb') as image_file:
-        content = image_file.read()
-
-    image = vision.Image(content=content)
-    image_context = vision.ImageContext(language_hints=["en-t-i0-handwrit"])
-
-    response = client.document_text_detection(image=image, image_context=image_context)
-
-    if response.error.message:
-        raise Exception(f"Error: {response.error.message}")
-
-    return response.full_text_annotation.text
-
-
-# Function to extract text from PDF (patient history)
-def extract_text_from_pdf(pdf_path):
-    """Extracts text from a PDF file."""
+@st.cache_data(show_spinner=False)
+def extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extract text from PDF bytes."""
     text = ""
-    with fitz.open(pdf_path) as pdf:
-        for page_num in range(pdf.page_count):
-            page = pdf.load_page(page_num)
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        for page in doc:
             text += page.get_text()
-
     return text
 
+def detect_handwritten_text(path_or_uri: str) -> str:
+    """Extract handwritten text via OpenAI Vision (local) or Google Vision (GCS URI)."""
+    try:
+        if path_or_uri.startswith("gs://"):
+            resp = vision_client.document_text_detection({"image_uri": path_or_uri})
+            return resp.full_text_annotation.text or ""
+        # local file → OpenAI Vision
+        with open(path_or_uri, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode()
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role":"system","content":"Extract only the handwritten prescription text."},
+                {"role":"user","content":[
+                    {"type":"text","text":"Please extract the handwritten prescription."},
+                    {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{img_b64}"}}
+                ]}
+            ],
+            max_tokens=800
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        st.error(f"Error extracting text: {e}")
+        return ""
 
-# Streamlit app logic
-st.title("Handwritten Prescription OCR and Verification with Patient History")
+def call_openai_system(user_content: str, system_prompt: str) -> str:
+    """Generic wrapper for OpenAI chat completion with error handling."""
+    try:
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role":"system","content":system_prompt},
+                {"role":"user","content":user_content}
+            ]
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        st.error(f"OpenAI API error: {e}")
+        return ""
 
-option = st.selectbox("Choose Input Source:", ["Upload Local File", "Google Cloud Storage URI"])
+def generate_summaries(history: dict, pdf_text: str) -> tuple[str, str]:
+    combined = json.dumps(history, indent=2) + "\n\n" + pdf_text
+    pat = call_openai_system(
+        combined,
+        "You are a caring assistant. Summarize this patient history in plain, reassuring language (2–3 paragraphs)."
+    )
+    doc = call_openai_system(
+        combined,
+        "You are a medical scribe. Produce a concise, structured clinical note in SOAP format."
+    )
+    return pat, doc
 
-if option == "Upload Local File":
-    uploaded_file = st.file_uploader("Upload an image (JPG, PNG, PDF)", type=["jpg", "jpeg", "png", "pdf"])
+def verify_prescription(pres_text: str, full_history: str) -> str:
+    prompt = f"Patient History:\n{full_history}\n\nPrescription:\n{pres_text}\n\n" + \
+             "Analyze for dosing errors, interactions, missing instructions; output a structured risk & recommendations report."
+    return call_openai_system(prompt, "You are an expert in prescription validation. Provide risk analysis & recommendations.")
 
-    if uploaded_file is not None:
-        # Save the uploaded file to a temporary location
-        with open(f"data/{uploaded_file.name}", "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        st.success(f"File {uploaded_file.name} uploaded successfully!")
+# ─── 3. Session State Helpers ────────────────────────────────────────────────────
 
-        # Extract text from the uploaded image
-        extracted_text = detect_handwritten_ocr_image(f"data/{uploaded_file.name}")
-        
-        # Display extracted text in a larger box
-        st.text_area("Extracted Text", extracted_text, height=300)
+if "history" not in st.session_state:
+    st.session_state.history = {}
+if "pdf_text" not in st.session_state:
+    st.session_state.pdf_text = ""
+if "pres_text" not in st.session_state:
+    st.session_state.pres_text = ""
 
-        # Upload patient history (PDF)
-        uploaded_pdf = st.file_uploader("Upload Patient History (PDF)", type=["pdf"])
+def reset_all():
+    for key in ["history", "pdf_text", "pres_text"]:
+        st.session_state.pop(key, None)
+    st.experimental_rerun()
 
-        patient_history = ""
-        if uploaded_pdf is not None:
-            # Save the uploaded PDF
-            with open(f"data/{uploaded_pdf.name}", "wb") as f:
-                f.write(uploaded_pdf.getbuffer())
-            st.success(f"Patient history file {uploaded_pdf.name} uploaded successfully!")
+# ─── 4. Layout & Navigation ─────────────────────────────────────────────────────
 
-            # Extract text from the PDF file
-            patient_history = extract_text_from_pdf(f"data/{uploaded_pdf.name}")
-            st.text_area("Extracted Patient History", patient_history, height=300)
+st.set_page_config(page_title="Medical Intake & RX Checker", layout="wide")
+with st.sidebar:
+    st.title("Navigation")
+    phase = st.radio("", ["1️⃣ Intake", "2️⃣ Summaries", "3️⃣ Verification"])
+    st.markdown("---")
+    if st.button("🔄 Start Over"):
+        reset_all()
 
-        # Verify prescription using LLM
-        if st.button("Verify Prescription with Patient History"):
-            verification_result = verify_prescription_with_llm(extracted_text, patient_history)
-            # verification_result = gemini_prescription_respoonse(extracted_text, patient_history)
-            st.write("LLM Verification Result:", verification_result)
+# ─── 5. Phase 1: Intake ──────────────────────────────────────────────────────────
 
-elif option == "Google Cloud Storage URI":
-    uri = st.text_input("Enter Google Cloud Storage URI (gs://...):")
+if phase.startswith("1"):
+    st.header("🩺 Medical History Intake")
 
-    if uri:
-        extracted_text = detect_handwritten_ocr_image(uri)
-        
-        # Display extracted text in a larger box
-        st.text_area("Extracted Text", extracted_text, height=300)
+    with st.form("history_form", clear_on_submit=False):
+        st.text_input("Full name", key="full_name", value=st.session_state.history.get("full_name", ""))
+        st.number_input("Age", min_value=0, max_value=120, key="age", value=st.session_state.history.get("age", 0))
+        st.selectbox("Gender", ["Prefer not to say","Female","Male","Other"], key="gender", index=0)
+        st.text_area("Allergies", key="allergies", value=st.session_state.history.get("allergies",""))
+        st.text_area("Current medications", key="medications", value=st.session_state.history.get("medications",""))
+        st.text_area("Past conditions or surgeries", key="conditions", value=st.session_state.history.get("conditions",""))
+        st.text_area("Current symptoms", key="symptoms", value=st.session_state.history.get("symptoms",""))
+        submitted = st.form_submit_button("Save History")
+        if submitted:
+            # Copy form fields into session_state.history
+            for field in ["full_name","age","gender","allergies","medications","conditions","symptoms"]:
+                st.session_state.history[field] = st.session_state[field]
+            st.success("✅ History saved! You can now go to Summaries or Verification.")
 
-        # Upload patient history (PDF)
-        uploaded_pdf = st.file_uploader("Upload Patient History (PDF)", type=["pdf"])
+    if st.session_state.history:
+        st.expander("📋 View current history", expanded=False).json(st.session_state.history)
 
-        patient_history = ""
-        if uploaded_pdf is not None:
-            # Save the uploaded PDF
-            with open(f"data/{uploaded_pdf.name}", "wb") as f:
-                f.write(uploaded_pdf.getbuffer())
-            st.success(f"Patient history file {uploaded_pdf.name} uploaded successfully!")
+# ─── 6. Phase 2: Summaries ───────────────────────────────────────────────────────
 
-            # Extract text from the PDF file
-            patient_history = extract_text_from_pdf(f"data/{uploaded_pdf.name}")
-            st.text_area("Extracted Patient History", patient_history, height=300)
+elif phase.startswith("2"):
+    if not st.session_state.history:
+        st.warning("Please complete the Intake first.")
+        st.stop()
 
-        # Verify prescription using LLM
-        if st.button("Verify Prescription with Patient History"):
-            verification_result = verify_prescription_with_llm(extracted_text, patient_history)
-            # verification_result = gemini_prescription_respoonse(extracted_text, patient_history)
-            st.write("LLM Verification Result:", verification_result)
+    st.header("📝 Generate Summaries")
+    st.subheader("Optional: Upload detailed history PDF")
+    uploaded_pdf = st.file_uploader("", type="pdf")
+    if uploaded_pdf:
+        pdf_bytes = uploaded_pdf.read()
+        st.session_state.pdf_text = extract_pdf_text(pdf_bytes)
+        with st.expander("🔍 Preview extracted PDF text", expanded=False):
+            st.text_area("", st.session_state.pdf_text, height=200)
+
+    if st.button("Generate Patient & Doctor Summaries"):
+        with st.spinner("Calling LLM…"):
+            patient_sum, doctor_sum = generate_summaries(st.session_state.history, st.session_state.pdf_text)
+        st.subheader("Patient-Friendly Summary")
+        st.write(patient_sum)
+        st.subheader("Doctor-Ready Report")
+        st.code(doctor_sum, language="text")
+
+# ─── 7. Phase 3: Prescription Verification ───────────────────────────────────────
+
+else:
+    if not st.session_state.history:
+        st.warning("Please complete the Intake first.")
+        st.stop()
+
+    st.header("✔️ Prescription OCR & Verification")
+    col1, col2 = st.columns(2)
+    with col1:
+        mode = st.radio("Input source", ["Upload File", "GCS URI"])
+        if mode == "Upload File":
+            up = st.file_uploader("", type=["png","jpg","jpeg","pdf"])
+            if up:
+                data = up.read()
+                if up.type == "application/pdf":
+                    st.session_state.pres_text = extract_pdf_text(data)
+                else:
+                    # write to temp file for vision
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(up.name)[1])
+                    tmp.write(data)
+                    tmp.close()
+                    st.session_state.pres_text = detect_handwritten_text(tmp.name)
+        else:
+            uri = st.text_input("gs://…", key="gcs_uri")
+            if uri:
+                st.session_state.pres_text = detect_handwritten_text(uri)
+
+    with col2:
+        if st.session_state.pres_text:
+            st.subheader("Extracted Prescription")
+            st.text_area("", st.session_state.pres_text, height=200)
+
+    if st.session_state.pres_text and st.button("Verify Prescription"):
+        full_hist = json.dumps(st.session_state.history, indent=2) + "\n\n" + st.session_state.pdf_text
+        with st.spinner("Verifying…"):
+            report = verify_prescription(st.session_state.pres_text, full_hist)
+        st.subheader("Verification Report")
+        st.write(report)
