@@ -5,7 +5,7 @@ import tempfile
 
 import streamlit as st
 import fitz  # PyMuPDF
-import en_core_sci_sm
+# import en_core_sci_sm
 from openai import OpenAI
 from google.oauth2 import service_account
 from google.cloud import vision_v1p3beta1 as vision
@@ -22,7 +22,7 @@ for var in REQUIRED_ENVS:
         st.stop()
 
 openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-nlp = en_core_sci_sm.load()
+# nlp = en_core_sci_sm.load()
 
 gcp_json = json.loads(os.environ["GOOGLE_APPLICATION_CREDENTIALS_JSON"])
 credentials = service_account.Credentials.from_service_account_info(gcp_json)
