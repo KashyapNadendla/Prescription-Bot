@@ -104,10 +104,14 @@ if "pdf_text" not in st.session_state:
     st.session_state.pdf_text = ""
 if "pres_text" not in st.session_state:
     st.session_state.pres_text = ""
+if "selected_phase" not in st.session_state: # Ensure selected_phase is initialized
+    st.session_state.selected_phase = "👋 Welcome"
+
 
 def reset_all():
     for key in ["history", "pdf_text", "pres_text"]:
         st.session_state.pop(key, None)
+    st.session_state.selected_phase = "👋 Welcome" # Reset to welcome page
     st.experimental_rerun()
 
 # ─── 4. Layout & Navigation ─────────────────────────────────────────────────────
@@ -115,14 +119,37 @@ def reset_all():
 st.set_page_config(page_title="Medical Intake & RX Checker", layout="wide")
 with st.sidebar:
     st.title("Navigation")
-    phase = st.radio("", ["1️⃣ Intake", "2️⃣ Summaries", "3️⃣ Verification"])
+    # Use st.session_state.selected_phase for the radio button
+    phase = st.radio(
+        "", 
+        ["👋 Welcome", "1️⃣ Intake", "2️⃣ Summaries", "3️⃣ Verification"], 
+        key="selected_phase" 
+    )
     st.markdown("---")
     if st.button("🔄 Start Over"):
         reset_all()
 
-# ─── 5. Phase 1: Intake ──────────────────────────────────────────────────────────
+# ─── 5. Welcome Phase ──────────────────────────────────────────────────────────
 
-if phase.startswith("1"):
+if phase.startswith("👋 Welcome"):
+    st.header("🎉 Welcome to the Medical Intake & RX Checker!")
+    st.markdown("""
+        This application helps you manage patient medical history and verify prescriptions efficiently.
+        
+        **Here's what you can do:**
+        - **Intake:** Enter patient details, allergies, current medications, and symptoms.
+        - **Summaries:** Generate patient-friendly and doctor-ready summaries from the intake data, optionally supplemented by a PDF medical history.
+        - **Verification:** Upload a prescription (image or PDF) to extract its text and verify it against the patient's history for potential issues.
+
+        Click the button below to begin the intake process.
+    """)
+    if st.button("Proceed to Intake Form"):
+        st.session_state.selected_phase = "1️⃣ Intake"
+        st.experimental_rerun()
+
+# ─── 6. Phase 1: Intake ──────────────────────────────────────────────────────────
+
+elif phase.startswith("1"):
     st.header("🩺 Medical History Intake")
 
     with st.form("history_form", clear_on_submit=False):
@@ -143,7 +170,7 @@ if phase.startswith("1"):
     if st.session_state.history:
         st.expander("📋 View current history", expanded=False).json(st.session_state.history)
 
-# ─── 6. Phase 2: Summaries ───────────────────────────────────────────────────────
+# ─── 7. Phase 2: Summaries ───────────────────────────────────────────────────────
 
 elif phase.startswith("2"):
     if not st.session_state.history:
@@ -167,9 +194,9 @@ elif phase.startswith("2"):
         st.subheader("Doctor-Ready Report")
         st.code(doctor_sum, language="text")
 
-# ─── 7. Phase 3: Prescription Verification ───────────────────────────────────────
+# ─── 8. Phase 3: Prescription Verification ───────────────────────────────────────
 
-else:
+elif phase.startswith("3"): # Ensure this matches the radio button option
     if not st.session_state.history:
         st.warning("Please complete the Intake first.")
         st.stop()
